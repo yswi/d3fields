@@ -14,7 +14,7 @@ import matplotlib as mpl
 import matplotlib.cm
 import matplotlib.pyplot as plt
 import cv2
-import mcubes
+# import mcubes
 import trimesh
 from PIL import Image
 import open3d as o3d
@@ -1343,7 +1343,7 @@ class Fusion():
         pcd = aggr_point_cloud_from_data(color, depth, K, pose, downsample=False, masks=mask)
         return pcd
     
-    def extract_mesh(self, pts, res, grid_shape):
+    # def extract_mesh(self, pts, res, grid_shape):
         # :param pts: (N, 3) torch tensor in world frame
         # :param res: dict contains:
         #             - 'dist': (N) torch tensor, dist to the closest point on the surface
