@@ -14,9 +14,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from XMem.model.group_modules import *
-from XMem.model import resnet
-from XMem.model.cbam import CBAM
+from d3fields.XMem.model.group_modules import *
+from d3fields.XMem.model import resnet
+from d3fields.XMem.model.cbam import CBAM
 
 
 class FeatureFusionBlock(nn.Module):

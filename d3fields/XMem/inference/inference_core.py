@@ -1,8 +1,8 @@
-from XMem.inference.memory_manager import MemoryManager
-from XMem.model.network import XMem
-from XMem.model.aggregate import aggregate
+from d3fields.XMem.inference.memory_manager import MemoryManager
+from d3fields.XMem.model.network import XMem
+from d3fields.XMem.model.aggregate import aggregate
 
-from XMem.util.tensor_util import pad_divide_by, unpad
+from d3fields.XMem.util.tensor_util import pad_divide_by, unpad
 
 
 class InferenceCore:

@@ -11,7 +11,7 @@ import torch
 import trimesh
 import argparse
 
-from fusion import Fusion, create_init_grid
+from d3fields.d3fields.fusion import Fusion, create_init_grid
 from utils.draw_utils import aggr_point_cloud_from_data
 
 def main(data_path,

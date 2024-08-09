@@ -10,7 +10,7 @@ from tqdm import tqdm
 from matplotlib import cm
 import pickle
 
-from fusion import Fusion
+from d3fields.d3fields.fusion import Fusion
 from utils.draw_utils import aggr_point_cloud_from_data
 from utils.track_vis import TrackVis
 

@@ -19,7 +19,7 @@ import cv2
 import numpy as np
 import matplotlib.pyplot as plt
 
-from utils.my_utils import get_current_YYYY_MM_DD_hh_mm_ss_ms
+from d3fields.utils.my_utils import get_current_YYYY_MM_DD_hh_mm_ss_ms
 
 
 def load_image(image_path):
@@ -434,7 +434,7 @@ def grounded_instance_sam_new_ver(image,
         labels.append(text_prompts[query_i])
     
     # add detections mask for background
-    bg_mask = ~np.bitwise_or.reduce(detections.mask, axis=0)
+    bg_mask = ~np.bitwise_or.reduce(detections.mask.astype(int), axis=0)
     bg_conf = 1.0
     detections.mask = np.concatenate([np.expand_dims(bg_mask, axis=0), detections.mask], axis=0)
     detections.confidence = np.concatenate([np.array([bg_conf]), detections.confidence], axis=0)

@@ -1,9 +1,9 @@
 #!/bin/bash
 
-wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth
-wget https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth # SwinT model
-wget https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha2/groundingdino_swinb_cogcoor.pth # SwinB model
-wget https://github.com/hkchengrex/XMem/releases/download/v1.0/XMem.pth
+wget https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth --no-check-certificate
+wget https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha/groundingdino_swint_ogc.pth --no-check-certificate # SwinT model
+wget https://github.com/IDEA-Research/GroundingDINO/releases/download/v0.1.0-alpha2/groundingdino_swinb_cogcoor.pth --no-check-certificate # SwinB model
+wget https://github.com/hkchengrex/XMem/releases/download/v1.0/XMem.pth --no-check-certificate
 
 mkdir -p ckpts
 mv sam_vit_h_4b8939.pth ckpts/

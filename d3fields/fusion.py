@@ -10,7 +10,8 @@ from tqdm import tqdm
 from PIL import Image
 import plotly.graph_objects as go
 import pickle
-from matplotlib import cm
+import matplotlib as mpl
+import matplotlib.cm
 import matplotlib.pyplot as plt
 import cv2
 import mcubes
@@ -21,13 +22,13 @@ import open3d as o3d
 import groundingdino
 from groundingdino.util.inference import Model as GroundingDINOModel
 from segment_anything import build_sam, SamPredictor
-from XMem.model.network import XMem
-from XMem.inference.data.mask_mapper import MaskMapper
-from XMem.inference.inference_core import InferenceCore
-from XMem.dataset.range_transform import im_normalization
-from utils.grounded_sam import grounded_instance_sam_new_ver
-from utils.draw_utils import draw_keypoints, aggr_point_cloud_from_data
-from utils.my_utils import  depth2fgpcd, fps_np
+from .XMem.model.network import XMem
+from .XMem.inference.data.mask_mapper import MaskMapper
+from .XMem.inference.inference_core import InferenceCore
+from .XMem.dataset.range_transform import im_normalization
+from d3fields.utils.grounded_sam import grounded_instance_sam_new_ver
+from d3fields.utils.draw_utils import draw_keypoints, aggr_point_cloud_from_data
+from d3fields.utils.my_utils import  depth2fgpcd, fps_np
 
 def project_points_coords(pts, Rt, K):
     """
@@ -320,7 +321,40 @@ class Fusion():
         assert pts.shape[1] == 3
         
         # transform pts to camera pixel coords and get the depth
-        pts_2d, valid_mask, pts_depth = project_points_coords(pts, self.curr_obs_torch['pose'], self.curr_obs_torch['K'])
+        # Create a point cloud        
+
+        def world_to_camera(cnt_pts, rt, intrinsics):
+            rt = rt.squeeze()
+            
+            extrinsics = rt
+            C = rt[:3, 3].unsqueeze(0).T
+            R = rt[:3, :3]
+            R_inv = R.T  # inverse of rot matrix is transpose
+
+            R_inv_C = R_inv @ C
+            extrinsics = torch.cat([R_inv, -R_inv_C], -1)
+            
+            cnt_pts_ = torch.ones((4, cnt_pts.shape[0])).to(cnt_pts.device)
+            cnt_pts_[:3, :] = cnt_pts.T
+            
+            # extrinsics_ = torch.eye(4).to(cnt_pts.device)
+            # extrinsics_[:3, :] = extrinsics
+            front_img =  intrinsics @ extrinsics @ cnt_pts_
+        
+            depth =  front_img[:, 2, :]
+            invalid_mask = torch.abs(depth)<1e-4
+            depth[invalid_mask] = 1e-3
+
+            
+            front_img = front_img[:, :2, :] / depth
+            front_img = torch.round(front_img).to(torch.int)
+            front_img = torch.clip(front_img, 0, 255)
+            front_img = front_img.transpose(2, 1)
+            return front_img, ~(invalid_mask), depth.unsqueeze(2)
+
+
+        pts_2d, valid_mask, pts_depth = world_to_camera(pts, self.curr_obs_torch['pose'], self.curr_obs_torch['K'])
+        # pts_2d_, valid_mask_, pts_depth_ = project_points_coords(pts, self.curr_obs_torch['pose'], self.curr_obs_torch['K'])
         pts_depth = pts_depth[...,0] # [rfn,pn]
         
         # get interpolated depth and features
@@ -331,13 +365,7 @@ class Fusion():
                                         padding_mode='zeros',
                                         align_corners=True,
                                         inter_mode='nearest')[...,0] # [rfn,pn,1]
-        # inter_normal = interpolate_feats(self.curr_obs_torch['normals'].permute(0,3,1,2),
-        #                                  pts_2d,
-        #                                 h = self.H,
-        #                                 w = self.W,
-        #                                 padding_mode='zeros',
-        #                                 align_corners=True,
-        #                                 inter_mode='bilinear') # [rfn,pn,3]
+
         
         # compute the distance to the closest point on the surface
         dist = inter_depth - pts_depth # [rfn,pn]
@@ -368,7 +396,8 @@ class Fusion():
         
         outputs = {'dist': dist,
                    'valid_mask': ~dist_all_invalid}
-        
+
+        # pts_2d = torch.cat([pts_2d[...,1:2] , pts_2d[...,0:1]], axis = -1)
         for k in return_names:
             inter_k = interpolate_feats(self.curr_obs_torch[k].permute(0,3,1,2),
                                         pts_2d,
@@ -377,7 +406,19 @@ class Fusion():
                                         padding_mode='zeros',
                                         align_corners=True,
                                         inter_mode='bilinear') # [rfn,pn,k_dim]
-            
+            # if k == 'mask':
+            #     data = np.zeros_like(self.curr_obs_torch[k].detach().cpu().numpy())[0]
+            #     print(pts_2d.shape, data.shape)
+            #     data[pts_2d.detach().cpu().numpy()[...,0], pts_2d.detach().cpu().numpy()[...,1]] = 255.
+            #     print(data.shape)
+            #     img = Image.fromarray( np.array(data, dtype='uint8'))
+            #     img.save('projected_2d.png')
+
+            #     print(self.curr_obs_torch[k].size())
+            #     img = Image.fromarray( np.array( self.curr_obs_torch[k].detach().cpu().numpy().squeeze() *255., dtype='uint8'))
+            #     img.save('raw_mask.png')
+
+
             # weighted sum
             # val = (inter_k * dist_weight.unsqueeze(-1)).sum(0) / (dist_weight.float().sum(0).unsqueeze(-1) + 1e-6) # [pn,k_dim]
             
@@ -390,7 +431,7 @@ class Fusion():
                 outputs[k+'_inter'] = inter_k
             else:
                 del inter_k
-        
+
         return outputs
 
     def eval_dist(self, pts):
@@ -524,7 +565,7 @@ class Fusion():
         #         'valid_mask': ~dist_all_invalid}
     
     def batch_eval(self, pts, return_names=['dino_feats', 'mask']):
-        batch_pts = 60000
+        batch_pts = len(pts) # 60000
         outputs = {}
         for i in range(0, pts.shape[0], batch_pts):
             st_idx = i
@@ -761,7 +802,6 @@ class Fusion():
                 if iou > max_iou:
                     max_iou = iou
                     max_iou_idx = k
-            
             if max_iou > 0.25:
                 is_new_inst = False
             
@@ -804,7 +844,8 @@ class Fusion():
         for j, label in enumerate(mask_label):
             # if j == 0:
             #     continue
-            pcd_i = self.extract_masked_pcd_in_views([j], [i], boundaries) # (N,3) in numpy array
+            print(i, j)
+            pcd_i = self.extract_masked_pcd_in_views([j], [i], boundaries) # inst_idx_ls, view_idx_ls, boundaries, (N,3) in numpy array
             index_i = self.pcd_to_index(pcd_i)
             is_new_inst = True
             max_iou = 0
@@ -1062,11 +1103,11 @@ class Fusion():
                 if i not in instance_info['idx']:
                     continue
                 mask_idx = instance_info['idx'][i]
-                new_mask[self.curr_obs_torch['mask_gs'][i][mask_idx]] = inst_idx
+                new_mask[self.curr_obs_torch['mask_gs'][i][mask_idx] == 1] = inst_idx                
             self.curr_obs_torch['mask'][i] = torch.from_numpy(new_mask).to(device=self.device, dtype=torch.uint8)
     
     def align_instance_mask_v3(self, queries, boundaries, expected_labels=None):
-        self.iou_threshold = 0.005
+        self.iou_threshold = 0.005 #0.005
         instances_info = []
         # each instance is a dict containing:
         # - 'label': the label of the instance
@@ -1089,7 +1130,8 @@ class Fusion():
         )
         for i in range(self.num_cam):
             instances_info = self.merge_instances_from_new_view_vox_ver(instances_info, i, boundaries)
-        instances_info = self.filter_instances_vox_ver(instances_info)
+            
+        instances_info = self.filter_instances_vox_ver(instances_info) # This filter 
         # TODO: add another function to adjust mask according to removed pcd
         instances_info = self.reorder_instances(instances_info, queries)
         self.swap_instance_mask(instances_info)
@@ -1115,8 +1157,10 @@ class Fusion():
         mask_confs = []
         for i in range(self.num_cam):
             # mask, label = grounded_instance_sam_bacth_queries_np(self.curr_obs_torch['color'][i], queries, self.ground_dino_model, self.sam_model, thresholds, merge_all)
+            # print("num cam", i, self.curr_obs_torch['color'][i].shape)
+            # print("color img", self.curr_obs_torch['color'][i].shape)
             mask, label, mask_conf = grounded_instance_sam_new_ver(self.curr_obs_torch['color'][i], queries, self.ground_dino_model, self.sam_model, thresholds, merge_all, device=self.device)
-            
+
             # filter out the mask close to robot_pcd
             if robot_pcd is not None:
                 to_delete = []
@@ -1143,13 +1187,14 @@ class Fusion():
         self.curr_obs_torch['mask_conf'] = mask_confs # [num_cam, ] list of list
         _, idx = np.unique(labels[0], return_index=True)
         self.curr_obs_torch['semantic_label'] = list(np.array(labels[0])[np.sort(idx)]) # list of semantic label we have
+
         
-        # fig, axs = plt.subplots(4, 4 + 1, sharex=True, figsize=(20,20))
-        # for i in range(4):
-        #     axs[i, 0].imshow(self.curr_obs_torch['color'][i])
-        #     for j in range(4):
-        #         axs[i, j + 1].imshow(query_mask.detach().cpu().numpy()[i] == j)
-        # plt.show()
+        for i in range( len(masks)): # for number of cams
+            for j in range(masks[i].shape[0]):
+                print(masks[i].shape, masks[i][j].shape)
+                # img = Image.fromarray( np.array((np.transpose(masks[i][j], (1,2,0)) + 2.) / 3. * 255., dtype=np.uint8))
+                img = Image.fromarray( np.array(masks[i][j] * 255., dtype=np.uint8))
+                img.save(f'mask_from_sam_c{i}_i{j}.png')
         
         # # verfiy the assumption that the mask label is the same for all cameras
         # for i in range(self.num_cam):
@@ -1166,9 +1211,17 @@ class Fusion():
         #         raise AssertionError
         
         # align instance mask id to the first frame
-        print(self.curr_obs_torch['mask_label'])
-        self.align_instance_mask_v3(queries, boundaries, expected_labels)
+        self.align_instance_mask_v3(queries, boundaries, expected_labels) # TODO: this seems to remove some mask 
+        mask_array = self.curr_obs_torch[f'mask'].squeeze().detach().cpu().numpy() /3 * 255.
+        img = Image.fromarray( np.array(mask_array, dtype=np.uint8))
+        img.save(f'mask_after_im3_{i}.png')
+
+        
         self.curr_obs_torch[f'mask'] = instance2onehot(self.curr_obs_torch[f'mask'].to(torch.uint8), len(self.curr_obs_torch['consensus_mask_label'])).to(dtype=self.dtype)
+        
+        mask_array = self.curr_obs_torch[f'mask'].squeeze().detach().cpu().numpy() /3 * 255.
+        img = Image.fromarray( np.array(mask_array, dtype=np.uint8))
+        img.save(f'mask_after_ioh_{i}.png')
     
     def text_queries_for_inst_mask(self, queries, thresholds, boundaries, use_sam=False, merge_all = False, expected_labels=None, robot_pcd=None):
         if 'color' not in self.curr_obs_torch:
@@ -1209,30 +1262,9 @@ class Fusion():
             self.curr_obs_torch['mask_conf'] = mask_confs # [num_cam, ] list of list
             _, idx = np.unique(labels[0], return_index=True)
             self.curr_obs_torch['semantic_label'] = list(np.array(labels[0])[np.sort(idx)]) # list of semantic label we have
-            
-            # fig, axs = plt.subplots(4, 4 + 1, sharex=True, figsize=(20,20))
-            # for i in range(4):
-            #     axs[i, 0].imshow(self.curr_obs_torch['color'][i])
-            #     for j in range(4):
-            #         axs[i, j + 1].imshow(query_mask.detach().cpu().numpy()[i] == j)
-            # plt.show()
-            
-            # # verfiy the assumption that the mask label is the same for all cameras
-            # for i in range(self.num_cam):
-            #     try:
-            #         assert self.curr_obs_torch['mask_label'][i] == self.curr_obs_torch['mask_label'][0]
-            #     except:
-            #         print('The mask label is not the same for all cameras!')
-            #         print(self.curr_obs_torch['mask_label'])
-            #         for j in range(self.num_cam):
-            #             for k in range(len(self.curr_obs_torch['mask_label'][j])):
-            #                 plt.subplot(1, len(self.curr_obs_torch['mask_label'][j]), k+1)
-            #                 plt.imshow(self.curr_obs_torch['mask'][j].detach().cpu().numpy() == k)
-            #             plt.show()
-            #         raise AssertionError
-            
+
             # align instance mask id to the first frame
-            print(self.curr_obs_torch['mask_label'])
+            print("expected_labels", expected_labels)
             self.align_instance_mask_v3(queries, boundaries, expected_labels)
             self.curr_obs_torch[f'mask'] = self.xmem_process(self.curr_obs_torch['color'], self.curr_obs_torch['mask']).to(dtype=self.dtype)
         elif self.xmem_first_mask_loaded and not use_sam:
@@ -1248,7 +1280,7 @@ class Fusion():
                 mask_confs.append(mask_conf)
                 # labels.append(label)
             query_mask = query_mask.to(torch.uint8)
-            query_mask = instance2onehot(query_mask, len(self.track_ids)) # [num_cam, H, W, num_instance]
+            query_mask = instance2onehot(query_mask, len(self.track_ids)) # s[num_cam, H, W, num_instance]
             query_mask = self.align_with_prev_mask(query_mask) # [num_cam, H, W, num_instance]
             query_mask = onehot2instance(query_mask) # [num_cam, H, W]
             self.curr_obs_torch[f'mask'] = self.xmem_process(self.curr_obs_torch['color'], query_mask).to(dtype=self.dtype) # [num_cam, H, W, num_instance]
@@ -1281,6 +1313,7 @@ class Fusion():
         # extract point cloud of the object instance with index inst_idx
         color = self.curr_obs_torch['color'][view_idx_ls]
         depth = self.curr_obs_torch['depth'].detach().cpu().numpy()[view_idx_ls]
+
         mask = np.stack([self.curr_obs_torch['mask_gs'][view_idx] for view_idx in view_idx_ls], axis=0).transpose(0, 2, 3, 1) # [num_view, H, W, num_inst]
         K = self.curr_obs_torch['K'].detach().cpu().numpy()[view_idx_ls]
         pose = self.curr_obs_torch['pose'].detach().cpu().numpy()[view_idx_ls]
@@ -1326,6 +1359,24 @@ class Fusion():
         # vertices_flat = np.unravel_index(vertices, grid_shape)
         vertices_flat = np.ravel_multi_index(vertices.T, grid_shape)
         vertices_coords = pts.detach().cpu().numpy()[vertices_flat]
+
+                
+        # Create a PointCloud object and set the points and colors
+
+        # Create a colormap
+        norm_data = abs(np.array(dist).reshape(-1))
+        norm_data = abs(norm_data) / np.max(norm_data)
+        cmap = mpl.colormaps['viridis'] 
+        colors = cmap(norm_data)[:, :3]  # Get RGB values only
+
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(pts.detach().cpu().numpy())
+        pcd.colors = o3d.utility.Vector3dVector(colors)
+        
+        # Write it into a .ply file (with RGB colors)
+        o3d.io.write_point_cloud("point_cloud.ply", pcd, write_ascii=False)
+
+
         
         return vertices_coords, triangles
     
@@ -1367,7 +1418,6 @@ class Fusion():
                 # mask_vis[mask == 4] = np.array(series_RGB[6])
                 
                 # mask_vis = np.concatenate([mask_vis, np.ones((mask_vis.shape[0], 1)) * 255], axis=1).astype(np.uint8)
-                
                 vertices_color = trimesh.visual.interpolate(mask / num_instance, color_map='jet')
                 mask_meshes.append(trimesh.Trimesh(vertices=vertices, faces=triangles[..., ::-1], vertex_colors=vertices_color))
         return mask_meshes
@@ -1454,8 +1504,8 @@ class Fusion():
             K = self.curr_obs_torch['K'][0].detach().cpu().numpy()
             fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
             img = self.curr_obs_torch['color'][0]
-            
-            cmap = cm.get_cmap('viridis')
+
+            cmap = mpl.colormaps['viridis'] 
             colors = ((cmap(np.linspace(0, 1, num_pts))[:, :3]) * 255).astype(np.int32)
             
             sample_pts = np.concatenate([sample_pts, np.ones([num_pts, 1])], axis=-1) # [num_pts, 4]

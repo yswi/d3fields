@@ -1,7 +1,7 @@
 import matplotlib
 # matplotlib.use('Agg')
 
-from utils.my_utils import depth2fgpcd, np2o3d
+from d3fields.utils.my_utils import depth2fgpcd, np2o3d
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
@@ -321,6 +321,55 @@ def voxel_downsample(pcd, voxel_size, pcd_color=None):
         return np.asarray(pcd_down.points), np.asarray(pcd_down.colors)
     else:
         return np.asarray(pcd_down.points)
+def _create_uniform_pixel_coords_image(resolution: np.ndarray):
+    pixel_x_coords = np.reshape(
+        np.tile(np.arange(resolution[1]), [resolution[0]]),
+        (resolution[0], resolution[1], 1),
+    ).astype(np.float32)
+    pixel_y_coords = np.reshape(
+        np.tile(np.arange(resolution[0]), [resolution[1]]),
+        (resolution[1], resolution[0], 1),
+    ).astype(np.float32)
+    pixel_y_coords = np.transpose(pixel_y_coords, (1, 0, 2))
+    uniform_pixel_coords = np.concatenate(
+        (pixel_x_coords, pixel_y_coords, np.ones_like(pixel_x_coords)), -1
+    )
+    return uniform_pixel_coords
+
+def pointcloud_from_depth_and_camera_params(
+    depth: np.ndarray, extrinsics: np.ndarray, intrinsics: np.ndarray
+) -> np.ndarray:
+    """Converts depth (in meters) to point cloud in word frame.
+    :return: A numpy array of size (width, height, 3)
+    """
+    upc = _create_uniform_pixel_coords_image(depth.shape)
+    pc = upc * np.expand_dims(depth, -1)
+    C = np.expand_dims(extrinsics[:3, 3], 0).T
+    R = extrinsics[:3, :3]
+    R_inv = R.T  # inverse of rot matrix is transpose
+    R_inv_C = np.matmul(R_inv, C)
+    extrinsics = np.concatenate((R_inv, -R_inv_C), -1)
+    cam_proj_mat = np.matmul(intrinsics, extrinsics)
+    cam_proj_mat_homo = np.concatenate([cam_proj_mat, [np.array([0, 0, 0, 1])]])
+    cam_proj_mat_inv = np.linalg.inv(cam_proj_mat_homo)[0:3]
+    world_coords_homo = np.expand_dims(_pixel_to_world_coords(pc, cam_proj_mat_inv), 0)
+    world_coords = world_coords_homo[..., :-1][0]
+    return world_coords
+    
+def _pixel_to_world_coords(pixel_coords, cam_proj_mat_inv):
+    h, w = pixel_coords.shape[:2]
+    pixel_coords = np.concatenate([pixel_coords, np.ones((h, w, 1))], -1)
+    world_coords = _transform(pixel_coords, cam_proj_mat_inv)
+    world_coords_homo = np.concatenate([world_coords, np.ones((h, w, 1))], axis=-1)
+    return world_coords_homo
+
+def _transform(coords, trans):
+    h, w = coords.shape[:2]
+    coords = np.reshape(coords, (h * w, -1))
+    coords = np.transpose(coords, (1, 0))
+    transformed_coords_vector = np.matmul(trans, coords)
+    transformed_coords_vector = np.transpose(transformed_coords_vector, (1, 0))
+    return np.reshape(transformed_coords_vector, (h, w, -1))    
 
 def aggr_point_cloud_from_data(colors, depths, Ks, poses, downsample=True, masks=None, boundaries=None, out_o3d=True):
     # colors: [N, H, W, 3] numpy array in uint8
@@ -347,13 +396,31 @@ def aggr_point_cloud_from_data(colors, depths, Ks, poses, downsample=True, masks
         else:
             mask = masks[i] & (depth > 0)
         # mask = np.ones_like(depth, dtype=bool)
-        pcd = depth2fgpcd(depth, mask, cam_param)
-        
+
+       
+
         pose = poses[i]
+        trans_pcd = pointcloud_from_depth_and_camera_params(depth, pose, K).reshape(-1,3)
+        trans_pcd = trans_pcd[mask.reshape(-1) == 1]
+        # trans_pcd_ = depth2fgpcd(depth, mask, cam_param)
+
+
+
+        import open3d as o3d
+        
+        # Create a point cloud
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(trans_pcd)
+
+   
+        # Save the point cloud to a .ply file
+        o3d.io.write_point_cloud("my_pcd.ply", pcd)
+        print(trans_pcd.shape)
+
         pose = np.linalg.inv(pose)
         
-        trans_pcd = pose @ np.concatenate([pcd.T, np.ones((1, pcd.shape[0]))], axis=0)
-        trans_pcd = trans_pcd[:3, :].T
+        # trans_pcd = pose @ np.concatenate([pcd.T, np.ones((1, pcd.shape[0]))], axis=0)
+        # trans_pcd = trans_pcd[:3, :].T
         
         # plt.subplot(1, 4, 1)
         # plt.imshow(trans_pcd[:, 0].reshape(H, W))
@@ -372,6 +439,8 @@ def aggr_point_cloud_from_data(colors, depths, Ks, poses, downsample=True, masks
             y_upper = boundaries['y_upper']
             z_lower = boundaries['z_lower']
             z_upper = boundaries['z_upper']
+
+            # print(np.amin(trans_pcd, axis= 0)  , np.amax(trans_pcd, axis= 0) )
             
             trans_pcd_mask = (trans_pcd[:, 0] > x_lower) &\
                 (trans_pcd[:, 0] < x_upper) &\
@@ -428,3 +497,58 @@ def draw_pcd_with_spheres(pcd, sphere_np_ls):
             sphere.translate(src_pt)
             sphere_list.append(sphere)
     o3d.visualization.draw_geometries([pcd] + sphere_list)
+
+# 360 visualization from jupyter notebook
+def rotate_pcd(pcd, eye = [-1.25, 2, 0.5]):
+    fig = go.Figure(
+      data=pcd,
+      layout=dict(
+          scene=dict(
+              xaxis=dict(visible=False),
+              yaxis=dict(visible=False),
+              zaxis=dict(visible=False)
+          )
+      )
+    )
+
+    x_eye = eye[0]
+    y_eye = eye[1]
+    z_eye = eye[2]
+
+    fig.update_layout(
+            title='360 animation',
+            width=600,
+            height=600,
+            scene_camera_eye=dict(x=x_eye, y=y_eye, z=z_eye),
+            updatemenus=[dict(type='buttons',
+                    showactive=False,
+                    y=1,
+                    x=0.8,
+                    xanchor='left',
+                    yanchor='bottom',
+                    pad=dict(t=45, r=10),
+                    buttons=[dict(label='Play',
+                                    method='animate',
+                                    args=[None, dict(frame=dict(duration=5, redraw=True), 
+                                                                transition=dict(duration=0),
+                                                                fromcurrent=True,
+                                                                mode='immediate'
+                                                                )]
+                                                )
+                                        ]
+                                )
+                            ]
+    )
+
+  
+    def rotate_z(x, y, z, theta):
+        w = x+1j*y
+        return np.real(np.exp(1j*theta)*w), np.imag(np.exp(1j*theta)*w), z
+    
+    frames=[]
+    for t in np.arange(0, 6.26, 0.1):
+        xe, ye, ze = rotate_z(x_eye, y_eye, z_eye, -t)
+        frames.append(go.Frame(layout=dict(scene_camera_eye=dict(x=xe, y=ye, z=ze))))
+    fig.frames=frames
+    return frames
+    # fig.show

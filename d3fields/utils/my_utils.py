@@ -20,7 +20,7 @@ import torch
 from torch.autograd import Variable
 import torchvision.transforms as T
 
-from dgl.geometry import farthest_point_sampler
+# from dgl.geometry import farthest_point_sampler
 import open3d as o3d
 
 from PIL import Image, ImageEnhance
@@ -525,7 +525,6 @@ def depth2fgpcd(depth, mask, cam_params):
     # mask: (h, w)
     h, w = depth.shape
     mask = np.logical_and(mask, depth > 0)
-    # mask = (depth <= 0.599/0.8)
     fgpcd = np.zeros((mask.sum(), 3))
     fx, fy, cx, cy = cam_params
     pos_x, pos_y = np.meshgrid(np.arange(w), np.arange(h))
